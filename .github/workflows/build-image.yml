@@ -233,11 +233,10 @@ jobs:
       # Sign and attest (SLSA Build L2 provenance)
       # Bluefin pattern: keyless OIDC signing via Fulcio.
       # Requires 'id-token: write' permission (granted above).
-      # Signing failures do not block candidate publication, but the release
-      # gate rejects an unsigned candidate and preserves the prior :stable.
+      # Both signatures are required: keyless for promotion, the repository key
+      # for containers/image on installed machines. Signing failures fail CI.
 
       - name: Sign and publish
-        continue-on-error: true
         uses: projectbluefin/actions/bootc-build/sign-and-publish@722bdf2e7fda6d5fac91c78c6ed396d7cf9a8dc5 # v1
         with:
           image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -247,6 +246,26 @@ jobs:
           push-attestation: true
           certificate-identity-regexp: https://github.com/${{ github.repository }}/.github/workflows/
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign for on-device verification
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${COSIGN_PRIVATE_KEY:?COSIGN_PRIVATE_KEY is required}"
+          : "${COSIGN_PASSWORD:?COSIGN_PASSWORD is required}"
+          # The preceding action installs cosign and signs keyless. Append, do
+          # not replace that signature. containers/image needs the legacy .sig
+          # attachment, not cosign 3's default OCI 1.1 bundle format.
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            --new-bundle-format=false --use-signing-config=false \
+            "${IMAGE}@${DIGEST}"
+          cosign verify --key custom/files/etc/containers/keys/my-bluefin.pub \
+            "${IMAGE}@${DIGEST}"
 
       - name: Build telemetry summary
         shell: bash

@@ -1,0 +1,199 @@
+---
+name: Build Installer
+
+# Produces installation media for an already-published image and proves it boots
+# before offering it.
+#
+# Manual dispatch only, and deliberately so. The input is a digest, not a branch:
+# this workflow never builds an image, it consumes one the Build and Push Image
+# workflow already published and signed. That keeps a single build path and makes
+# the artifact this produces traceable to one immutable digest.
+#
+# Order matters. The qcow2 is built and booted first, because a disk image can be
+# tested headlessly and discarded. The ISO is built only after that passes, since
+# it is the artifact a human will write to real hardware.
+on:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "Published image digest to build installers for (sha256:...)"
+        required: true
+        type: string
+      channel:
+        description: "Channel the installed system will track for updates"
+        required: true
+        type: choice
+        options:
+          - stable-testing
+          - stable
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.channel }}-${{ inputs.digest }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/sultanaltair96/my-bluefin
+  BIB_IMAGE: ghcr.io/osbuild/bootc-image-builder:latest@sha256:4cd0deb14fb7f14d54304a11b8b0769e47c6ba23733d2356b21ffafd34aba178
+  CHANNEL: ${{ inputs.channel }}
+  DIGEST: ${{ inputs.digest }}
+
+jobs:
+  installer:
+    name: Build and boot-test installer media
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Reject a malformed digest or an unexpected channel before anything is
+      # pulled or built. The same validation runs inside the VM verifier, so the
+      # rules live in one place.
+      - name: Validate inputs
+        shell: bash
+        run: bash scripts/verify-vm.sh validate "${DIGEST}" "${CHANNEL}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Prove the digest carries this repository's signature before it is turned
+      # into installation media. An unsigned or foreign image must not reach a
+      # disk, and this is the last point where that is cheap to detect.
+      - name: Verify the image signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify --key custom/files/etc/containers/keys/my-bluefin.pub \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Pull the image and confirm the channel resolves to it
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo podman pull "${IMAGE}@${DIGEST}"
+          sudo podman tag "${IMAGE}@${DIGEST}" "${IMAGE}:${CHANNEL}"
+
+          # The installed system tracks a tag, not a digest, because a
+          # digest-pinned origin cannot be upgraded. That makes the tag the thing
+          # updates follow, so it must currently point at the digest under test
+          # or the booted machine would not be running what was verified above.
+          resolved="$(sudo podman image inspect "${IMAGE}:${CHANNEL}" --format '{{.Digest}}')"
+          if [[ "${resolved}" != "${DIGEST}" ]]; then
+            echo "Channel ${CHANNEL} resolves to ${resolved}, expected ${DIGEST}" >&2
+            exit 1
+          fi
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 ovmf openssh-client python3
+
+      # The qcow2 carries test users and an ephemeral key so it can be booted
+      # headlessly. The ISO below never sees this configuration: installer media
+      # must not ship credentials.
+      - name: Generate the test disk configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh-keygen -q -t ed25519 -N '' -f "${RUNNER_TEMP}/ci-smoke"
+          bash scripts/verify-vm.sh config \
+            "${RUNNER_TEMP}/ci-smoke.pub" "${RUNNER_TEMP}/disk.json"
+
+      - name: Build the qcow2 test disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output-qcow2
+          sudo podman run --rm --privileged --net=host \
+            --security-opt label=type:unconfined_t \
+            -v "${PWD}/output-qcow2:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "${BIB_IMAGE}" \
+            --type qcow2 --use-librepo=True --rootfs=btrfs \
+            --config "${RUNNER_TEMP}/disk.json" \
+            "${IMAGE}:${CHANNEL}"
+
+      # Boots the disk, checks the identity, signature policy, services, the
+      # NVIDIA module against the running kernel, and a new user's GNOME
+      # defaults, then runs a signed update check against the real registry.
+      - name: Boot-test the qcow2
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/verify-vm.sh run \
+            output-qcow2/qcow2/disk.qcow2 \
+            "${RUNNER_TEMP}/ci-smoke" \
+            "${DIGEST}" "${CHANNEL}" \
+            vm-logs
+
+      - name: Build the installer ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output-iso
+          # iso/iso.toml keeps the interactive Anaconda installer, so disk
+          # selection stays a human decision and no account is baked in.
+          sudo podman run --rm --privileged --net=host \
+            --security-opt label=type:unconfined_t \
+            -v "${PWD}/output-iso:/output" \
+            -v "${PWD}/iso/iso.toml:/config.toml:ro" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "${BIB_IMAGE}" \
+            --type iso --use-librepo=True --rootfs=btrfs \
+            --config /config.toml \
+            "${IMAGE}:${CHANNEL}"
+
+      - name: Record the artifact and its provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          iso=output-iso/bootiso/install.iso
+          test -f "${iso}"
+          mkdir -p dist
+          cp "${iso}" "dist/my-bluefin-${CHANNEL}.iso"
+          cd dist
+          sha256sum "my-bluefin-${CHANNEL}.iso" >"my-bluefin-${CHANNEL}.iso.sha256"
+          # Built with python rather than a heredoc: the step body is indented,
+          # and that indentation would otherwise become part of the file.
+          python3 - <<'PY'
+          import json, os, pathlib
+          pathlib.Path('provenance.json').write_text(json.dumps({
+              'image': os.environ['IMAGE'],
+              'digest': os.environ['DIGEST'],
+              'channel': os.environ['CHANNEL'],
+              'iso': f"my-bluefin-{os.environ['CHANNEL']}.iso",
+              'commit': os.environ['GITHUB_SHA'],
+              'run': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                     f"/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'base-image': 'ghcr.io/ublue-os/bluefin-nvidia-open:stable',
+              'boot-tested': True,
+          }, indent=2) + '\n')
+          PY
+          ls -l
+
+      - name: Upload installer and provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: my-bluefin-${{ inputs.channel }}-installer
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+      # Boot and check logs are the only evidence a later reader has for why an
+      # artifact was or was not considered good. Upload them even on failure.
+      - name: Upload boot-test logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: my-bluefin-${{ inputs.channel }}-boot-logs
+          path: vm-logs/
+          if-no-files-found: ignore
+          retention-days: 30
