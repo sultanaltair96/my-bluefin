@@ -23,18 +23,33 @@ Deliberately **not** here: personal files, browser state, SSH keys, tokens,
 keyrings, AppImages and application data. Those live in an encrypted snapshot —
 see [docs/recovery.md](docs/recovery.md).
 
-## Updates are verified on the device
+## Signing and update verification
 
 Most custom images sign in CI and then install with an unverified update
-transport, so nothing checks the signature where it matters. This one does
-verify:
+transport, so nothing checks the signature where it matters. This image is built
+so that it can:
 
 - CI signs the published digest with a repository keypair, in addition to the
   keyless signature the promotion gate uses.
 - The image ships the public key, a `sigstoreSigned` scope for its own namespace
-  in `/etc/containers/policy.json`, and the matching `registries.d` entry.
-- `image-info.json` therefore records a **signed** transport, and `bootc upgrade`
-  checks the signature before deploying.
+  in `/etc/containers/policy.json`, and the matching `registries.d` entry. The
+  policy default stays `reject`, as the base image set it.
+- The boot test proves the shipped policy accepts the published signature, using
+  containers/image with the files in the image and nothing else.
+
+**One step is not automatic.** Whether a machine's *updates* are signature
+checked depends on the transport in its bootc origin, and that origin is written
+by the installer, not by this image. An install from the ISO may therefore track
+an unverified transport, in which case `bootc upgrade` deploys without checking
+the signature. The boot test reports which transport the installed system
+actually has rather than assuming.
+
+To require verification on an installed machine:
+
+```bash
+sudo bootc switch --enforce-container-sigpolicy \
+  ghcr.io/sultanaltair96/my-bluefin:stable
+```
 
 The private key is **not** in this repository. Losing it means future updates
 cannot be signed under the same identity, so it is backed up separately and must

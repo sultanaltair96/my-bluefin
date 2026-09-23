@@ -264,8 +264,17 @@ jobs:
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
             --new-bundle-format=false --use-signing-config=false \
             "${IMAGE}@${DIGEST}"
-          cosign verify --key custom/files/etc/containers/keys/my-bluefin.pub \
-            "${IMAGE}@${DIGEST}"
+
+          # Verify with containers/image rather than `cosign verify --key`. The
+          # digest now carries two signatures on purpose, keyless for the
+          # promotion gate and key-based for on-device verification, and cosign's
+          # verifier rejects that combination with "expected key signature, not
+          # certificate". containers/image accepts it and is what bootc calls on a
+          # device. The script installs the shipped trust material and fails
+          # closed; see scripts/verify-image-signature.sh.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo jq
+          sudo bash scripts/verify-image-signature.sh "${IMAGE}@${DIGEST}"
 
       - name: Build telemetry summary
         shell: bash

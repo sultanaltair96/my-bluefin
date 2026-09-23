@@ -67,9 +67,32 @@ assert 'COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}' in key
 assert 'COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}' in key
 assert 'DIGEST: ${{ steps.push.outputs.digest }}' in key
 script = key.split('        run: |\n', 1)[1]
-for required in ('set -euo pipefail', '--key env://COSIGN_PRIVATE_KEY', '--new-bundle-format=false', '--use-signing-config=false', '${IMAGE}@${DIGEST}', 'cosign verify', 'custom/files/etc/containers/keys/my-bluefin.pub'):
+for required in ('set -euo pipefail', '--key env://COSIGN_PRIVATE_KEY', '--new-bundle-format=false', '--use-signing-config=false', '${IMAGE}@${DIGEST}', 'scripts/verify-image-signature.sh'):
     assert required in script, required
 assert '|| true' not in script
+
+# Verification must go through containers/image, not cosign's own verifier.
+# The digest carries a keyless signature (for the promotion gate) and a
+# key-based one (for on-device verification) at the same time, and
+# `cosign verify --key` refuses that combination with "expected key signature,
+# not certificate". containers/image accepts it and is what bootc calls on a
+# device. See scripts/verify-image-signature.sh.
+code = '\n'.join(
+    line for line in script.splitlines()
+    if not line.lstrip().startswith('#')
+)
+assert 'cosign verify' not in code, code
+assert 'verify-image-signature.sh' in code
+
+# And the script the workflows share must exist and be the one that fails closed.
+verifier = repo / 'scripts/verify-image-signature.sh'
+assert verifier.exists()
+verifier_text = verifier.read_text()
+for required in ('skopeo copy', 'sigstoreSigned', 'matchRepository',
+                 'custom/files/etc/containers/keys/my-bluefin.pub',
+                 'custom/files/etc/containers/registries.d/my-bluefin.yaml'):
+    assert required in verifier_text, required
+assert 'set -euo pipefail' in verifier_text
 PY
     [ "$status" -eq 0 ]
 }

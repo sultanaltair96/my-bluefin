@@ -66,54 +66,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             podman skopeo qemu-system-x86 ovmf openssh-client python3 jq
 
-      # Install the trust material exactly as the image ships it, so the check
-      # below exercises the same policy file and registries.d entry a booted
-      # machine will use rather than a CI-only approximation.
-      - name: Install the trust policy this image ships
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo install -D -m0644 \
-            custom/files/etc/containers/keys/my-bluefin.pub \
-            /etc/containers/keys/my-bluefin.pub
-          sudo install -D -m0644 \
-            custom/files/etc/containers/registries.d/my-bluefin.yaml \
-            /etc/containers/registries.d/my-bluefin.yaml
-
-          # Add only this repository's scope and leave everything else the runner
-          # trusts untouched, mirroring build/35-signing-policy.sh. The default
-          # entry stays permissive so pulling the builder image still works.
-          tmp="$(mktemp)"
-          if [[ -s /etc/containers/policy.json ]]; then
-            jq '.transports.docker["ghcr.io/sultanaltair96/my-bluefin"] = [{
-                  type: "sigstoreSigned",
-                  keyPath: "/etc/containers/keys/my-bluefin.pub",
-                  signedIdentity: {type: "matchRepository"}
-                }]' /etc/containers/policy.json >"${tmp}"
-          else
-            printf '{"default":[{"type":"insecureAcceptAnything"}],"transports":{"docker":{"ghcr.io/sultanaltair96/my-bluefin":[{"type":"sigstoreSigned","keyPath":"/etc/containers/keys/my-bluefin.pub","signedIdentity":{"type":"matchRepository"}}]}}}\n' >"${tmp}"
-          fi
-          sudo install -m0644 "${tmp}" /etc/containers/policy.json
-          rm -f "${tmp}"
-
       # Prove the digest carries this repository's signature before it becomes
       # installation media. An unsigned or foreign image must not reach a disk,
       # and this is the last point where that is cheap to detect.
-      #
-      # This deliberately does NOT use `cosign verify --key`. The digest carries
-      # both a keyless and a key-based signature, and cosign's verifier rejects
-      # that combination outright ("expected key signature, not certificate")
-      # because it walks the signature layers and refuses the certificate one.
-      # containers/image, which is what bootc actually calls on the device,
-      # accepts the set and matches the key-based layer. Testing the mechanism
-      # the device uses is also the stronger check, so skopeo is the gate here.
       - name: Verify the image signature
         shell: bash
         run: |
           set -euo pipefail
-          verify_dir="$(mktemp -d)"
-          trap 'rm -rf "${verify_dir}"' EXIT
-          skopeo copy "docker://${IMAGE}@${DIGEST}" "dir:${verify_dir}"
+          # Installs the shipped public key, registries.d entry and policy scope,
+          # then verifies through containers/image. One implementation is shared
+          # with the image build workflow; see scripts/verify-image-signature.sh.
+          sudo bash scripts/verify-image-signature.sh "${IMAGE}@${DIGEST}"
 
       - name: Pull the image and confirm the channel resolves to it
         shell: bash

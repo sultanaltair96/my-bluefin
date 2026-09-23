@@ -43,6 +43,18 @@ PY
     [[ "$output" == *"Invalid identity"* ]]
 }
 
+# The checks must observe the system the installer produced, not one the test
+# rewrote first. An earlier version ran `bootc switch --mutate-in-place` to
+# rewrite the origin, which cannot work here (/sysroot is read-only, so it fails
+# with "Read-only file system") and would have validated a modified deployment.
+# Verification is proven instead through the shipped policy, which is
+# read-only and is the same mechanism bootc uses.
+@test "guest checks do not mutate the deployment they verify" {
+    ! grep -qE '^[[:space:]]*bootc switch' "$REPO/scripts/verify-vm-guest.sh"
+    grep -q 'skopeo copy' "$REPO/scripts/verify-vm-guest.sh"
+    grep -q 'sigstoreSigned' "$REPO/scripts/verify-vm-guest.sh"
+}
+
 @test "installer accepts only explicit published channels" {
     for channel in stable stable-testing; do
         run bash "$REPO/scripts/verify-vm.sh" validate "sha256:$(printf '%064d' 0)" "$channel"
@@ -84,35 +96,21 @@ assert '${IMAGE}:${CHANNEL}' in joined
 assert 'resolved' in joined
 
 # Signature verification happens before the image becomes media.
-policy = next(i for i, s in enumerate(steps) if 'Install the trust policy' in (s.get('name') or ''))
 verify = next(i for i, s in enumerate(steps) if 'Verify the image signature' in (s.get('name') or ''))
 # The builder image is named once in the workflow env and referenced as
 # ${BIB_IMAGE} by the steps that run it.
 assert 'bootc-image-builder' in workflow['env']['BIB_IMAGE']
 first_bib = next(i for i, b in enumerate(bodies) if '${BIB_IMAGE}' in b)
-assert policy < verify < first_bib
-assert 'custom/files/etc/containers/keys/my-bluefin.pub' in bodies[policy]
-assert 'custom/files/etc/containers/registries.d/my-bluefin.yaml' in bodies[policy]
+assert verify < first_bib
 
-# The gate must be containers/image, not cosign.
-#
-# The digest carries both a keyless and a key-based signature, and
-# `cosign verify --key` rejects that combination with "expected key signature,
-# not certificate". containers/image accepts it and matches the key-based layer,
-# and it is what bootc calls on the device, so it is both the only workable
-# check and the more faithful one. Verified by hand against the published digest.
-assert 'skopeo copy' in bodies[verify]
-# Check invocations, not mentions: the step explains the cosign limitation in a
-# comment, and a comment is not a call.
-code = '\n'.join(
-    line for body in bodies for line in body.splitlines()
-    if not line.lstrip().startswith('#')
-)
-assert 'cosign' not in code
-
-# The shipped policy is installed verbatim, so the check exercises the file a
-# booted machine uses rather than a CI-only rewrite.
-assert 'install -D' in bodies[policy]
+# The gate is the shared script, which installs the shipped trust material and
+# verifies through containers/image. cosign cannot be the gate: the digest
+# carries a keyless and a key-based signature on purpose, and `cosign verify
+# --key` rejects that combination with "expected key signature, not certificate".
+# See scripts/verify-image-signature.sh, checked by hand against the published
+# digest and against an unsigned one.
+assert 'scripts/verify-image-signature.sh' in bodies[verify]
+assert 'custom/files/etc/containers/keys/my-bluefin.pub' not in bodies[verify]
 
 # The qcow2 gets test users and an ephemeral key; the ISO must not.
 iso_step = next(b for b in bodies if '--type iso' in b)
