@@ -121,6 +121,18 @@ assert 'iso/iso.toml' in iso_step
 qcow2_step = next(b for b in bodies if '--type qcow2' in b)
 assert 'disk.json' in qcow2_step
 
+# The builder reads its config inside its own container, so --config must name an
+# in-container path backed by a mount. Passing a host path looks correct and then
+# fails at runtime with "cannot read config: open ...: no such file or directory".
+for body in bodies:
+    if '--config' not in body:
+        continue
+    assert ':/config.toml:ro' in body, body
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('--config'):
+            assert stripped.split()[-1] == '/config.toml', stripped
+
 # Boot-testing must precede ISO construction, and the ISO must not be uploaded
 # unless that test ran successfully.
 boot = next(i for i, s in enumerate(steps) if (s.get('name') or '').startswith('Boot-test'))
