@@ -62,8 +62,12 @@ PY
         pid=$!
         ssh_args=(-i "$key" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts"
-            -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
-        deadline=$((SECONDS + ${VM_BOOT_TIMEOUT:-900}))
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=8
+            -o TCPKeepAlive=yes)
+        # First boot is slow under software emulation: the runner has no KVM, and
+        # first-boot units (Flatpak provisioning, and a repeated nvidia-cdi-refresh
+        # attempt on a machine with no GPU) compete for CPU. Allow generously.
+        deadline=$((SECONDS + ${VM_BOOT_TIMEOUT:-1800}))
         ready=0
         while (( SECONDS < deadline )); do
             kill -0 "$pid" 2>/dev/null || { echo 'QEMU exited before SSH; see qemu.log' >&2; exit 1; }
@@ -72,9 +76,24 @@ PY
         done
         [[ "$ready" == 1 ]] || { echo 'Timed out waiting for guest SSH' >&2; exit 1; }
         guest_script=$(dirname "$(realpath "$0")")/verify-vm-guest.sh
+        # The checks resolve the image manifest and signature over the guest's
+        # user-mode network while the guest is still busy with first boot, so a
+        # single attempt is not reliable: sshd can go briefly unresponsive under
+        # load and the connection then dies mid-run. Retry the whole check and
+        # report only the last result, appending each attempt so a later reader
+        # can see what happened rather than just the final failure.
         result=0
-        timeout 600 ssh "${ssh_args[@]}" root@127.0.0.1 bash -s -- "$digest" "$channel" \
-            < "$guest_script" > "$logs/checks.log" 2>&1 || result=$?
+        attempts=${VM_CHECK_ATTEMPTS:-3}
+        for attempt in $(seq 1 "$attempts"); do
+            printf '=== check attempt %s/%s ===\n' "$attempt" "$attempts" >> "$logs/checks.log"
+            result=0
+            timeout "${VM_CHECK_TIMEOUT:-900}" ssh "${ssh_args[@]}" root@127.0.0.1 \
+                bash -s -- "$digest" "$channel" \
+                < "$guest_script" >> "$logs/checks.log" 2>&1 || result=$?
+            [[ "$result" == 0 ]] && break
+            printf 'check attempt %s/%s failed with %s\n' "$attempt" "$attempts" "$result" >&2
+            (( attempt < attempts )) && sleep 30
+        done
         timeout 60 ssh "${ssh_args[@]}" root@127.0.0.1 \
             'journalctl -b --no-pager; bootc status --json; systemctl --failed --no-pager' \
             > "$logs/journal.log" 2>&1 || true
