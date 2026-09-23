@@ -122,18 +122,20 @@ qcow2_step = next(b for b in bodies if '--type qcow2' in b)
 assert 'disk.json' in qcow2_step
 
 # The builder reads its config inside its own container, so --config must name an
-# in-container path backed by a mount. Passing a host path looks correct and then
-# fails at runtime with "cannot read config: open ...: no such file or directory".
+# in-container path backed by a mount, and the builder picks its parser from the
+# extension. Both mistakes were made here and each failed only at runtime:
+# a host path gives "cannot read config: ... no such file or directory", and
+# JSON mounted at /config.toml gives "expected '.' or '='".
+import re
 for body in bodies:
     if '--config' not in body:
         continue
-    assert ':/config.toml:ro' in body, body
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith('--config'):
-            # The line ends in a shell continuation, so compare the arguments
-            # rather than the last whitespace-separated token.
-            assert '/config.toml' in stripped.split(), stripped
+    mount = re.search(r'(\S+?):(/config\.\w+):ro', body)
+    assert mount, body
+    source, destination = mount.group(1), mount.group(2)
+    assert source.endswith(destination.replace('/config', '')), (source, destination)
+    argument = re.search(r'--config\s+(\S+)', body)
+    assert argument and argument.group(1) == destination, body
 
 # Boot-testing must precede ISO construction, and the ISO must not be uploaded
 # unless that test ran successfully.

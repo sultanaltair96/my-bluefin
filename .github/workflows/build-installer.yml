@@ -150,17 +150,18 @@ jobs:
           set -euo pipefail
           mkdir -p output-qcow2
           # The config is read by the builder inside its own container, so it has
-          # to be mounted and referenced by its in-container path. BIB accepts
-          # TOML or JSON content and detects the format from the content, so the
-          # mount point stays /config.toml, matching the Justfile's recipes.
+          # to be mounted and referenced by its in-container path. The builder
+          # picks its parser from the file extension, so the mount point has to
+          # keep this file's .json extension: mounting JSON at /config.toml makes
+          # it try TOML and fail with "expected '.' or '='".
           sudo podman run --rm --privileged --net=host \
             --security-opt label=type:unconfined_t \
             -v "${PWD}/output-qcow2:/output" \
-            -v "${RUNNER_TEMP}/disk.json:/config.toml:ro" \
+            -v "${RUNNER_TEMP}/disk.json:/config.json:ro" \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             "${BIB_IMAGE}" \
             --type qcow2 --use-librepo=True --rootfs=btrfs \
-            --config /config.toml \
+            --config /config.json \
             "${IMAGE}:${CHANNEL}"
 
       # Boots the disk, checks the identity, signature policy, services, the
