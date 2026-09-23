@@ -131,7 +131,9 @@ for body in bodies:
     for line in body.splitlines():
         stripped = line.strip()
         if stripped.startswith('--config'):
-            assert stripped.split()[-1] == '/config.toml', stripped
+            # The line ends in a shell continuation, so compare the arguments
+            # rather than the last whitespace-separated token.
+            assert '/config.toml' in stripped.split(), stripped
 
 # Boot-testing must precede ISO construction, and the ISO must not be uploaded
 # unless that test ran successfully.
