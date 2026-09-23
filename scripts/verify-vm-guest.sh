@@ -14,7 +14,12 @@ fi
 [[ $EUID == 0 && -n ${SSH_CONNECTION:-} ]] || { echo 'Guest root SSH session required' >&2; exit 2; }
 digest=$1
 channel=$2
-ref="ghcr.io/sultanaltair96/my-bluefin:$channel"
+# Keep the repository separate from the tagged reference: a digest can only be
+# appended to the repository. `repo:tag@sha256:...` is rejected outright by
+# containers/image with "Docker references with both a tag and digest are
+# currently not supported".
+repo=ghcr.io/sultanaltair96/my-bluefin
+ref="${repo}:${channel}"
 
 echo '=== image identity ==='
 python3 - "$digest" <<'PY'
@@ -50,7 +55,7 @@ PY
 # image fails here. Nothing is deployed and the origin is left alone.
 echo '=== on-device signature verification ==='
 rm -rf /tmp/ci-signature-check
-skopeo copy "docker://${ref}@${digest}" dir:/tmp/ci-signature-check
+skopeo copy "docker://${repo}@${digest}" dir:/tmp/ci-signature-check
 rm -rf /tmp/ci-signature-check
 echo 'PASS: the shipped policy verifies the published signature'
 

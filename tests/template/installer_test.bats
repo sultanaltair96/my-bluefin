@@ -55,6 +55,17 @@ PY
     grep -q 'sigstoreSigned' "$REPO/scripts/verify-vm-guest.sh"
 }
 
+# containers/image rejects `repo:tag@sha256:...` with "Docker references with both
+# a tag and digest are currently not supported", so a digest may only ever be
+# appended to the bare repository. Passing the tagged reference is the natural
+# mistake and it fails immediately, which is how this was found.
+@test "guest verification appends the digest to the repository, not the tag" {
+    grep -q 'repo=ghcr.io/sultanaltair96/my-bluefin' "$REPO/scripts/verify-vm-guest.sh"
+    grep -qF 'docker://${repo}@${digest}' "$REPO/scripts/verify-vm-guest.sh"
+    ! grep -qF 'docker://${ref}@' "$REPO/scripts/verify-vm-guest.sh"
+    ! grep -qE ':\$?\{?channel\}@sha256' "$REPO/scripts/verify-vm-guest.sh"
+}
+
 @test "installer accepts only explicit published channels" {
     for channel in stable stable-testing; do
         run bash "$REPO/scripts/verify-vm.sh" validate "sha256:$(printf '%064d' 0)" "$channel"

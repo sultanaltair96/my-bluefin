@@ -82,12 +82,17 @@ PY
         # load and the connection then dies mid-run. Retry the whole check and
         # report only the last result, appending each attempt so a later reader
         # can see what happened rather than just the final failure.
+        #
+        # The signature check inside the guest copies the published image through
+        # the shipped policy, which means fetching and unpacking its layers under
+        # software emulation. That is the slowest part of the run, so the attempt
+        # timeout is generous rather than tight.
         result=0
         attempts=${VM_CHECK_ATTEMPTS:-3}
         for attempt in $(seq 1 "$attempts"); do
             printf '=== check attempt %s/%s ===\n' "$attempt" "$attempts" >> "$logs/checks.log"
             result=0
-            timeout "${VM_CHECK_TIMEOUT:-900}" ssh "${ssh_args[@]}" root@127.0.0.1 \
+            timeout "${VM_CHECK_TIMEOUT:-1500}" ssh "${ssh_args[@]}" root@127.0.0.1 \
                 bash -s -- "$digest" "$channel" \
                 < "$guest_script" >> "$logs/checks.log" 2>&1 || result=$?
             [[ "$result" == 0 ]] && break
