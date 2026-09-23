@@ -50,13 +50,34 @@ PY
 
 # Prove the signature is accepted by the files this image actually ships, using
 # the same mechanism bootc uses: containers/image reading /etc/containers/
-# policy.json and the registries.d entry. A copy resolves the manifest, fetches
-# the signature and enforces the policy, so an unsigned, foreign or tampered
-# image fails here. Nothing is deployed and the origin is left alone.
+# policy.json and the registries.d entry. An unsigned, foreign or tampered image
+# fails here. Nothing is deployed and the origin is left alone.
+#
+# containers/image enforces the policy while it resolves the source manifest,
+# which is before it fetches a single blob. So a bounded copy is enough: the
+# image is either rejected outright, or it gets as far as transferring layers,
+# which only happens once the signature has been accepted. Waiting for the whole
+# image would download several gigabytes under software emulation to prove
+# nothing further, so the transfer is deliberately abandoned.
 echo '=== on-device signature verification ==='
+signature_log=/tmp/ci-signature-check.log
+rm -rf /tmp/ci-signature-check "${signature_log}"
+status=0
+timeout 300 skopeo copy "docker://${repo}@${digest}" dir:/tmp/ci-signature-check \
+    >"${signature_log}" 2>&1 || status=$?
+# 0 means the whole copy finished, which is conclusive on its own. 124 means the
+# bound stopped it while it was transferring layers. Buffered output could in
+# principle be lost to the timeout, so the log is only consulted as a second
+# signal, and only for evidence that transfer had started. Never treat "Getting
+# image source signatures" as success: that line means the signature is being
+# fetched, not that it was accepted.
+if [[ "${status}" != 0 ]] && ! grep -qE 'Copying blob|Writing manifest' "${signature_log}"; then
+    cat "${signature_log}" >&2
+    echo 'FAIL: the shipped policy did not accept the published signature' >&2
+    exit 1
+fi
 rm -rf /tmp/ci-signature-check
-skopeo copy "docker://${repo}@${digest}" dir:/tmp/ci-signature-check
-rm -rf /tmp/ci-signature-check
+grep -E 'Getting image source signatures|Copying blob' "${signature_log}" | head -2
 echo 'PASS: the shipped policy verifies the published signature'
 
 echo '=== booted deployment ==='
