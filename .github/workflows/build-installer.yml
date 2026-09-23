@@ -58,23 +58,68 @@ jobs:
         shell: bash
         run: bash scripts/verify-vm.sh validate "${DIGEST}" "${CHANNEL}"
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            podman skopeo qemu-system-x86 ovmf openssh-client python3 jq
 
-      # Prove the digest carries this repository's signature before it is turned
-      # into installation media. An unsigned or foreign image must not reach a
-      # disk, and this is the last point where that is cheap to detect.
+      # Install the trust material exactly as the image ships it, so the check
+      # below exercises the same policy file and registries.d entry a booted
+      # machine will use rather than a CI-only approximation.
+      - name: Install the trust policy this image ships
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -D -m0644 \
+            custom/files/etc/containers/keys/my-bluefin.pub \
+            /etc/containers/keys/my-bluefin.pub
+          sudo install -D -m0644 \
+            custom/files/etc/containers/registries.d/my-bluefin.yaml \
+            /etc/containers/registries.d/my-bluefin.yaml
+
+          # Add only this repository's scope and leave everything else the runner
+          # trusts untouched, mirroring build/35-signing-policy.sh. The default
+          # entry stays permissive so pulling the builder image still works.
+          tmp="$(mktemp)"
+          if [[ -s /etc/containers/policy.json ]]; then
+            jq '.transports.docker["ghcr.io/sultanaltair96/my-bluefin"] = [{
+                  type: "sigstoreSigned",
+                  keyPath: "/etc/containers/keys/my-bluefin.pub",
+                  signedIdentity: {type: "matchRepository"}
+                }]' /etc/containers/policy.json >"${tmp}"
+          else
+            printf '{"default":[{"type":"insecureAcceptAnything"}],"transports":{"docker":{"ghcr.io/sultanaltair96/my-bluefin":[{"type":"sigstoreSigned","keyPath":"/etc/containers/keys/my-bluefin.pub","signedIdentity":{"type":"matchRepository"}}]}}}\n' >"${tmp}"
+          fi
+          sudo install -m0644 "${tmp}" /etc/containers/policy.json
+          rm -f "${tmp}"
+
+      # Prove the digest carries this repository's signature before it becomes
+      # installation media. An unsigned or foreign image must not reach a disk,
+      # and this is the last point where that is cheap to detect.
+      #
+      # This deliberately does NOT use `cosign verify --key`. The digest carries
+      # both a keyless and a key-based signature, and cosign's verifier rejects
+      # that combination outright ("expected key signature, not certificate")
+      # because it walks the signature layers and refuses the certificate one.
+      # containers/image, which is what bootc actually calls on the device,
+      # accepts the set and matches the key-based layer. Testing the mechanism
+      # the device uses is also the stronger check, so skopeo is the gate here.
       - name: Verify the image signature
         shell: bash
         run: |
           set -euo pipefail
-          cosign verify --key custom/files/etc/containers/keys/my-bluefin.pub \
-            "${IMAGE}@${DIGEST}"
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "${verify_dir}"' EXIT
+          skopeo copy "docker://${IMAGE}@${DIGEST}" "dir:${verify_dir}"
 
       - name: Pull the image and confirm the channel resolves to it
         shell: bash
         run: |
           set -euo pipefail
+          # The same policy is installed, so this pull is signature-checked too.
           sudo podman pull "${IMAGE}@${DIGEST}"
           sudo podman tag "${IMAGE}@${DIGEST}" "${IMAGE}:${CHANNEL}"
 
@@ -87,14 +132,6 @@ jobs:
             echo "Channel ${CHANNEL} resolves to ${resolved}, expected ${DIGEST}" >&2
             exit 1
           fi
-
-      - name: Install test dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf openssh-client python3
 
       # The qcow2 carries test users and an ephemeral key so it can be booted
       # headlessly. The ISO below never sees this configuration: installer media
