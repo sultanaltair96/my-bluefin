@@ -96,4 +96,3 @@ assert 'set -euo pipefail' in verifier_text
 PY
     [ "$status" -eq 0 ]
 }
-
