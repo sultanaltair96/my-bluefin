@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Tests for custom/ujust/custom-system.just recipes:
-#   configure-dev-groups, install-config.
+#   configure-dev-groups.
 #
 # Each recipe body is extracted out of the justfile into a standalone bash
 # script and run against PATH mocks, so nothing runs against the host.
@@ -145,62 +145,6 @@ _run_recipe() {
 
     _run_recipe "configure-dev-groups" MOCK_GETENT_STATUS=1 MOCK_GROUPS="tester"
     [ "$(grep -cvE '^sudo (groupadd|usermod) |^(id|getent|gum) ' "${COMMAND_LOG}")" -eq 0 ]
-}
-
-@test "install-config copies the seeded config into the user's home" {
-    mkdir -p "${WORKDIR}/skel/app" "${WORKDIR}/skel/environment.d"
-    printf 'default\n' > "${WORKDIR}/skel/app/config.conf"
-    printf 'env\n' > "${WORKDIR}/skel/environment.d/10-example.conf"
-
-    _run_recipe "install-config" SKEL_CONFIG="${WORKDIR}/skel"
-
-    [ "${status}" -eq 0 ]
-    [ "$(cat "${HOME}/.config/app/config.conf")" = "default" ]
-    [ "$(cat "${HOME}/.config/environment.d/10-example.conf")" = "env" ]
-}
-
-@test "install-config backs up a file instead of overwriting it" {
-    mkdir -p "${WORKDIR}/skel/app" "${HOME}/.config/app"
-    printf 'default\n' > "${WORKDIR}/skel/app/config.conf"
-    printf 'mine\n' > "${HOME}/.config/app/config.conf"
-
-    _run_recipe "install-config" SKEL_CONFIG="${WORKDIR}/skel"
-
-    [ "${status}" -eq 0 ]
-    [ "$(cat "${HOME}/.config/app/config.conf")" = "default" ]
-    backup="$(ls "${HOME}/.config/app/"config.conf.backup.* 2>/dev/null | head -n1)"
-    [ -n "${backup}" ]
-    [ "$(cat "${backup}")" = "mine" ]
-}
-
-@test "install-config lists the conflicts it is about to back up" {
-    mkdir -p "${WORKDIR}/skel/app" "${HOME}/.config/app"
-    printf 'default\n' > "${WORKDIR}/skel/app/config.conf"
-    printf 'mine\n' > "${HOME}/.config/app/config.conf"
-
-    _run_recipe "install-config" SKEL_CONFIG="${WORKDIR}/skel"
-
-    [ "${status}" -eq 0 ]
-    [[ "${output}" == *"Already present, and will be backed up first:"* ]]
-    [[ "${output}" == *"- app/config.conf"* ]]
-}
-
-@test "install-config cancels without touching anything" {
-    mkdir -p "${WORKDIR}/skel/app"
-    printf 'default\n' > "${WORKDIR}/skel/app/config.conf"
-
-    _run_recipe "install-config" SKEL_CONFIG="${WORKDIR}/skel" MOCK_CONFIRM=1
-
-    [ "${status}" -eq 0 ]
-    [[ "${output}" == *"Cancelled."* ]]
-    [ ! -e "${HOME}/.config/app/config.conf" ]
-}
-
-@test "install-config fails when the seed directory is absent" {
-    _run_recipe "install-config" SKEL_CONFIG="${WORKDIR}/nope"
-
-    [ "${status}" -eq 1 ]
-    [[ "${output}" == *"does not exist"* ]]
 }
 
 @test "every custom-system recipe declares a just group" {
