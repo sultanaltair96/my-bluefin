@@ -1,212 +1,149 @@
-# finpilot
+# my-bluefin
 
-A template for building your own bootc operating system image, assembled the
-same way Bluefin, Aurora, and Bluefin LTS are: from shared OCI layers rather
-than by modifying an existing image. The desktop configuration comes from
-[`projectbluefin/common`](https://github.com/projectbluefin/common), Homebrew
-from [`ublue-os/brew`](https://github.com/ublue-os/brew), and the rest is yours.
+A personal, reproducible Bluefin desktop: one immutable image that carries a
+specific set of applications, GNOME extensions and preferences, plus the signed
+update path to keep it current.
 
-It is built to be driven by hand or by an agent.
+## What this is
 
-> Be the one who moves, not the one who is moved.
+This is a **thin derivative**, not a rebuild. The base is the real
+`ghcr.io/ublue-os/bluefin-nvidia-open` image, pinned by digest, so the desktop,
+kernel, NVIDIA driver, Homebrew mechanism and ujust runtime are the tested
+upstream ones. This repository adds only what is personal to one workstation:
 
-## What Makes this Raptor Different?
+| Added | Where |
+|---|---|
+| 34 Flatpak applications | `custom/flatpaks/default.preinstall` |
+| 19 command-line tools | `custom/brew/default.Brewfile` |
+| 7 GNOME Shell extensions enabled, 1 installed | `build/40-gnome-extensions.sh` |
+| GNOME preferences as system defaults | `custom/files/usr/share/my-bluefin/gnome-settings.dconf` |
+| Key-based signature policy for verified updates | `build/35-signing-policy.sh` |
 
-Here are the changes from [Base Image Name]. This image is based on
-[Bluefin/Bazzite/Aurora/etc] and includes these customizations:
+Deliberately **not** here: personal files, browser state, SSH keys, tokens,
+keyrings, AppImages and application data. Those live in an encrypted snapshot —
+see [docs/recovery.md](docs/recovery.md).
 
-### Added Packages (Build-time)
+## Signing and update verification
 
-- List the packages you install at build time
+Most custom images sign in CI and then install with an unverified update
+transport, so nothing checks the signature where it matters. This image is built
+so that it can:
 
-### Added Applications (Runtime)
+- CI signs the published digest with a repository keypair, in addition to the
+  keyless signature the promotion gate uses.
+- The image ships the public key, a `sigstoreSigned` scope for its own namespace
+  in `/etc/containers/policy.json`, and the matching `registries.d` entry. The
+  policy default stays `reject`, as the base image set it.
+- The boot test proves the shipped policy accepts the published signature, using
+  containers/image with the files in the image and nothing else.
 
-- **CLI tools (Homebrew)**: list them
-- **GUI apps (Flatpak)**: list them
+**One step is not automatic.** Whether a machine's *updates* are signature
+checked depends on the transport in its bootc origin, and that origin is written
+by the installer, not by this image. An install from the ISO may therefore track
+an unverified transport, in which case `bootc upgrade` deploys without checking
+the signature. The boot test reports which transport the installed system
+actually has rather than assuming.
 
-### Removed or Disabled
-
-- List anything removed from the base image
-
-### Configuration Changes
-
-- Systemd services enabled or disabled
-- Desktop environment changes
-- Other notable modifications
-
-_Last updated: [date]_
-
-> This section is what tells your users how your image differs from its base.
-> Update it whenever you add or remove a package, app, or service.
-
-## Quick start
-
-1. **Create your repository** — "Use this template" on GitHub.
-2. **Rename the project.** The published name is your repository name. Three
-   files carry it as a literal, and `just test-contract` fails if they disagree:
-
-   - `Containerfile` — the `# Name:` comment and `ARG IMAGE_NAME`
-   - `Justfile` — the `IMAGE_NAME` default
-   - `artifacthub-repo.yml` — `repositoryID`
-
-   Grep for `finpilot` afterwards to catch the prose and the examples.
-3. **Finish setup.** [The `onboarding` skill](.agents/skills/onboarding/SKILL.md)
-   carries the rest — enabling Actions, auto-merge and workflow permissions, the
-   Renovate token, the `stable` branch, branch protection on both branches, and
-   the labels. Every step has a `gh` command and a GitHub-website route, and the
-   skill ends by auditing that each setting matches.
-
-## What's included
-
-**Build system**
-
-- A build on every push to `main`, publishing `:stable-testing`
-- Renovate through `projectbluefin/actions`, updating pinned actions and image
-  digests every six hours
-- Images older than 90 days pruned automatically
-- Pull requests validated for shellcheck, hadolint, Brewfiles, Flatpaks,
-  Justfiles, and Renovate config
-- Keyless OIDC signing on every published image, enforced at promotion
-  ([where the signature is checked](#where-the-signature-is-checked))
-
-**Runtime**
-
-- Homebrew, pre-staged at build time and unpacked on first boot
-- Flatpaks declared in `custom/flatpaks/`, installed on first boot
-- `ujust` shortcuts for the Brewfiles and for re-applying configuration
-- `uupd` for scheduled system updates
-
-## Customize
-
-Pick your base image on the `Containerfile`'s `FROM` line; the template defaults
-to Fedora Silverblue. That line is the only place the base is chosen: `just build`
-reads the image name and the tag from it, and the Fedora major comes from the
-base image itself during the build.
-
-Then add to your image:
-
-- **System packages** — `build/20-packages-and-services.sh` ([guide](build/README.md))
-- **CLI tools** — `custom/brew/` ([guide](custom/brew/README.md))
-- **GUI apps** — `custom/flatpaks/` ([guide](custom/flatpaks/README.md))
-- **Commands** — `custom/ujust/` ([guide](custom/ujust/README.md))
-
-[The `customize` skill](.agents/skills/customize/SKILL.md) decides which of
-those a given package belongs in.
-
-## Releases
-
-| Branch   | Image tag         | Audience                       |
-| -------- | ----------------- | ------------------------------ |
-| `main`   | `:stable-testing` | Testers and release candidates |
-| `stable` | `:stable`         | Production                     |
-
-Merging to `main` publishes `:stable-testing`; the promotion PR that follows
-publishes `:stable` when merged. Promotion verifies the cosign signature on the
-testing image before it reports ready, and refuses to promote at all once `main`
-has moved past the commit the promotion PR was built from.
-
-> **Known gap:** the promotion gate checks the digest and the signature only. It
-> runs no end-to-end tests, so `release/ready` means "signed and unmodified",
-> not "functionally validated".
-
-## Image signing
-
-Images are signed with keyless OIDC via Cosign and GitHub Actions. There is no
-key to generate or store.
+To require verification on an installed machine:
 
 ```bash
-cosign verify \
-  --certificate-identity-regexp="https://github.com/your-username/your-repo-name/.github/workflows/" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/your-username/your-repo-name:stable
+sudo bootc switch --enforce-container-sigpolicy \
+  ghcr.io/sultanaltair96/my-bluefin:stable
 ```
 
-Unsigned images fail the promotion gate, so `main → stable` reports
-`release/blocked` until signing is restored.
+The private key is **not** in this repository. Losing it means future updates
+cannot be signed under the same identity, so it is backed up separately and must
+stay out of Git.
 
-### Where the signature is checked
+## Install
 
-**In CI, on the way to `:stable` — and not verified on the device.** The
-promotion gate is the only enforcement point. An installed system pulls its
-updates over an unverified transport (`image-info.json`'s `image-ref` is
-`ostree-unverified-image:docker://…`), so `bootc upgrade` does not check the
-cosign signature.
+Installer media is built from a published digest by the **Build Installer**
+workflow (manual dispatch). It boot-tests a qcow2 first and only then builds the
+ISO, so the artifact you download has actually started successfully. The ISO uses
+the interactive Anaconda installer: disk selection stays your decision, and no
+account or password is baked in.
 
-That is a deliberate statement of what the image can actually do, not an
-oversight. Device-side verification runs through
-`/etc/containers/policy.json`, which matches a keyless Fulcio certificate on
-`subjectEmail` only — mandatory and exact. A GitHub Actions certificate
-identifies its workflow in a URI SAN and carries no email, so no policy entry
-can match it, and the inherited policy's `""` catch-all
-(`insecureAcceptAnything`) would accept the image regardless. A signed-looking
-`image-ref` here would verify nothing while implying it verified something.
-
-Making updates verify on the device means signing with a key the policy can
-name: publish with a cosign keypair, merge a `sigstoreSigned` scope for your
-namespace into the inherited policy (with `jq`, during
-[`build/10-overlay.sh`](build/10-overlay.sh) — never by shipping a whole
-`policy.json` through `custom/files/`, which freezes every scope you inherited),
-add a `registries.d` entry with `use-sigstore-attachments: true` for it, and
-flip `IMAGE_REF` back to `ostree-image-signed:`. Validate that on a real
-install before shipping it: a scope that does not match turns `bootc upgrade`
-into a hard refusal. `tests/contract/image-signing_test.bats` holds the two
-sides together, so changing one without the other fails the suite.
-
-## Using your image
-
-Switch to a built image:
+To move an existing bootc system onto this image instead:
 
 ```bash
-sudo bootc switch --transport registry ghcr.io/your-username/your-repo-name:stable-testing
+sudo bootc switch --transport registry --enforce-container-sigpolicy \
+  ghcr.io/sultanaltair96/my-bluefin:stable
 sudo systemctl reboot
 ```
 
-Then, as your user:
+Do not point a working machine at a new image until it has booted in a VM.
+
+After first login, on a machine with networking:
 
 ```bash
-ujust install-default-apps    # Homebrew: the default Brewfile
-ujust install-dev-tools       # Homebrew: the development Brewfile
-ujust configure-dev-groups    # add yourself to docker and libvirt
-ujust install-config          # re-apply the image defaults, backing up yours
+ujust install-default-apps      # the 19 Homebrew tools
+ujust apply-gnome-settings      # re-apply GNOME preferences explicitly
+ujust configure-dev-groups      # add yourself to docker and libvirt
 ```
 
-First boot unpacks Homebrew and installs the declared Flatpaks; both need a
-network connection. Check them with `systemctl status brew-setup.service` and
-`systemctl status flatpak-preinstall.service`.
+Flatpaks install on first boot from Flathub, which needs a working network
+connection. They are declarations, not payloads embedded in the ISO, so a first
+boot performed offline installs nothing until the next boot online.
 
-## Local testing
+## What the desktop looks like
+
+Seven extensions are enabled: AppIndicator support, Bazaar Companion, Blur my
+Shell, Caffeine, Logo Menu, Search Light, and Resource Monitor. Resource Monitor
+is the only extension the base does not ship; it is installed from a
+checksum-pinned archive.
+
+That list is pinned by this repository rather than inherited. Bluefin enables
+`dash-to-dock`, `gradia-integration` and `gsconnect` on every account and this
+image leaves them installed but not enabled, matching the source desktop.
+Enabling one later in Extension Manager is a user-level change and takes
+precedence.
+
+GNOME preferences are installed as **system defaults** in
+`/etc/dconf/db/local.d/`, which sits below the user's own database. A new account
+starts with dark mode, the slate accent, `Ctrl+Q` to close a window, and the
+other captured preferences; any setting you change afterwards wins, so the image
+never fights you.
+
+## Build and test
 
 ```bash
-just build            # build the container image
-just build-qcow2      # build a QCOW2 disk image
-just run-vm-qcow2     # boot it in a browser-based VM
-just build-iso        # build an installer ISO
-just test-unit        # run the test suite
+just check               # Justfile syntax
+just lint                # shellcheck every tracked script
+just validate-brewfiles  # Brewfile declarations
+just validate-flatpaks   # Flatpak ids exist on Flathub
+just test-unit           # the contract and template suites
+just build               # build the image against the pinned base
+just build-qcow2         # a bootable test disk
+just build-iso           # installer media
 ```
 
-## Troubleshooting
+`tests/contract/` covers the interfaces the image must satisfy, including that
+every phase the Containerfile invokes exists, is executable, and fails closed
+rather than silently overriding upstream.
 
-[The `troubleshooting` skill](.agents/skills/troubleshooting/SKILL.md) covers
-build, CI, and runtime failures symptom-first. The two most common first-boot
-surprises:
+## Honest limits
 
-- **No Flatpaks.** `flatpak-preinstall.service` needs a network connection and
-  reports success even when it cannot reach Flathub, so a first boot before
-  Wi-Fi is configured installs nothing. Reboot once you are online.
-- **No `brew`.** `brew-setup.service` unpacks Homebrew on first boot; check its
-  status before reaching for a reinstall.
+- **Declarative, not bit-reproducible.** The base is pinned by digest and the
+  extensions by checksum, but Flatpaks and Homebrew formulae install current
+  upstream versions. The application *selection* reproduces; exact package
+  versions drift.
+- **NVIDIA is inherited, not proven here.** The driver comes from the base image
+  and the build can only confirm the packages and kernel pairing. The VM check
+  verifies the module matches the running kernel; it cannot prove a physical GPU
+  works, which needs the real laptop.
+- **The ISO is installation media, not a copy of a desktop.** It reproduces the
+  system; your data comes from the encrypted snapshot.
+- **Private state is dated.** The recovery snapshot is a point-in-time copy.
+  Refresh it before migrating.
 
-## Community
+## Recovery
 
-- [Universal Blue Discord](https://discord.gg/WEu6BdFEtp)
-- [bootc discussions](https://github.com/bootc-dev/bootc/discussions)
+See [docs/recovery.md](docs/recovery.md) for the encrypted snapshot, how to
+refresh it, and how to restore onto a new machine.
 
-## Learn more
+## Upstream
 
-- [Universal Blue](https://universal-blue.org/)
+- [Project Bluefin](https://docs.projectbluefin.io/)
+- [Finpilot](https://github.com/projectbluefin/finpilot) — the template this
+  started from
 - [bootc](https://containers.github.io/bootc/)
-- [Project Bluefin contributing guide](https://docs.projectbluefin.io/contributing/)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).

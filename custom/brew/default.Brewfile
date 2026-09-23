@@ -1,3 +1,20 @@
-# Default Brewfile
-# Uncomment packages you want to install, or add your own.
-# Users install via: ujust install-default-apps
+# Homebrew tools reproduced from the source Bluefin installation.
+brew "atuin"
+brew "bash-preexec"
+brew "bat"
+brew "chezmoi"
+brew "direnv"
+brew "dysk"
+brew "eza"
+brew "fd"
+brew "gh"
+brew "mise"
+brew "podman-tui"
+brew "ripgrep"
+brew "starship"
+brew "tealdeer"
+brew "trash-cli"
+brew "ugrep"
+brew "uutils-coreutils"
+brew "yq"
+brew "zoxide"
