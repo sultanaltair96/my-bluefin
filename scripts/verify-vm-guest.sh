@@ -121,7 +121,14 @@ done
 
 echo '=== NVIDIA module matches the running kernel ==='
 kernel=$(uname -r)
-rpm -q --whatprovides "kernel-uname-r = $kernel"
+# Confirm the running kernel comes from an installed kernel-core package.
+#
+# Do not use `rpm -q --whatprovides "kernel-uname-r = $kernel"`: the versioned
+# form matches nothing even though kernel-core does provide that capability
+# (verified on a known-good machine, where it reports "no package provides"
+# while `--whatprovides kernel-uname-r` lists kernel-core). Comparing the
+# installed package's NEVR against `uname -r` tests the same thing and works.
+rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | grep -qx "$kernel"
 module=$(modinfo -k "$kernel" -n nvidia)
 [[ -f "$module" ]]
 rpm -qf "$module"
