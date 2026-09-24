@@ -66,6 +66,14 @@ for entry in "${EGO_EXTENSIONS[@]}"; do
 	unzip -q -o "${archive}" -d "${EXTENSIONS_DIR}/${uuid}"
 	rm -f "${archive}"
 
+	# Normalize modes to match a system-installed extension. The archive carries
+	# its own modes, and this one ships metadata.json as 0600. GNOME Shell loads
+	# extensions as the logged-in user, not as root, so a root-only metadata.json
+	# makes the extension silently absent for every account while still appearing
+	# in the enabled list. `a+rX` grants read to all, and search only where a
+	# directory must be traversed or a file was already executable.
+	chmod -R a+rX "${EXTENSIONS_DIR}/${uuid}"
+
 	# The install directory must be the uuid the extension declares, and the
 	# extension must claim this GNOME release. Checking both turns a silent
 	# "installed but never loaded" into a build failure.

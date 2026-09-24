@@ -73,7 +73,15 @@ timeout 300 skopeo copy "docker://${repo}@${digest}" dir:/tmp/ci-signature-check
 # fetched, not that it was accepted.
 if [[ "${status}" != 0 ]] && ! grep -qE 'Copying blob|Writing manifest' "${signature_log}"; then
     cat "${signature_log}" >&2
-    echo 'FAIL: the shipped policy did not accept the published signature' >&2
+    # Distinguish an unreachable registry from a rejected signature. Both fail
+    # the check, but reporting a TLS handshake timeout as "the policy did not
+    # accept the signature" sends a reader after a signature problem that does
+    # not exist. The caller retries either way.
+    if grep -qiE 'TLS handshake timeout|i/o timeout|connection refused|no such host|network is unreachable|dial tcp' "${signature_log}"; then
+        echo 'FAIL: could not reach the registry to verify the signature (network, not policy)' >&2
+    else
+        echo 'FAIL: the shipped policy did not accept the published signature' >&2
+    fi
     exit 1
 fi
 rm -rf /tmp/ci-signature-check
@@ -140,7 +148,18 @@ echo '=== new-user GNOME defaults ==='
 # Do not use GSETTINGS_BACKEND=memory: that bypasses dconf and can hide
 # regressions. ci-smoke was created by the installer, after the image build, so
 # these values come from the system defaults the image ships, not from an import.
-runuser -u ci-smoke -- dbus-run-session -- python3 - <<'PY'
+#
+# dconf needs a usable XDG_RUNTIME_DIR belonging to the user being checked.
+# `runuser` drops privileges but leaves root's value in place, so dconf fails
+# with "unable to create directory '/run/user/0/dconf'" and gsettings silently
+# falls back to schema defaults -- which would let this check pass on a system
+# whose dconf defaults were never applied at all. Create the runtime directory
+# the way pam_systemd would, then point the child at it.
+smoke_uid="$(id -u ci-smoke)"
+smoke_runtime="/run/user/${smoke_uid}"
+install -d -m 0700 -o ci-smoke -g ci-smoke "${smoke_runtime}"
+runuser -u ci-smoke -- env XDG_RUNTIME_DIR="${smoke_runtime}" \
+    dbus-run-session -- python3 - <<'PY'
 import ast, json, pathlib, subprocess
 
 def setting(schema, key):

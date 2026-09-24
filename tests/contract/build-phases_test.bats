@@ -141,6 +141,16 @@ setup() {
     grep -qF 'zz9-my-bluefin-extensions.gschema.override' "${phase}"
 }
 
+@test "the extension phase makes installed files readable by users" {
+    # The pinned archive ships metadata.json as 0600. GNOME Shell loads
+    # extensions as the logged-in user, not as root, so a root-only metadata.json
+    # leaves the extension silently absent for every account while it still
+    # appears in the enabled list. Normalizing to match a system-installed
+    # extension is what makes the install real rather than nominal.
+    grep -qE '^[[:space:]]*chmod -R a\+rX "\$\{EXTENSIONS_DIR\}/\$\{uuid\}"' \
+        "${BUILD_DIR}/40-gnome-extensions.sh"
+}
+
 @test "shellcheck is clean on every build phase" {
     command -v shellcheck >/dev/null || skip "shellcheck is not installed"
     for phase in "${INVOKED[@]}"; do
