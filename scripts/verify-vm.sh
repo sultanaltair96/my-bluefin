@@ -87,8 +87,33 @@ PY
         # the shipped policy, which means fetching and unpacking its layers under
         # software emulation. That is the slowest part of the run, so the attempt
         # timeout is generous rather than tight.
+        #
+        # The guest's user-mode network comes up independently of sshd, so the
+        # first check can meet a registry that is not yet reachable: in one run
+        # attempts 1 and 3 died on a TLS handshake timeout while attempt 2 got
+        # through every check. Wait for the registry to answer before spending an
+        # attempt, and widen the backoff, so a slow network does not quietly
+        # consume the retry budget and look like a policy failure.
+        #
+        # The gate is advisory: curl's exit status is 0 for any HTTP reply, so
+        # this tests reachability and TLS rather than authorisation. If the guest
+        # has no curl, or the registry never answers, the checks still run and
+        # report the real error instead of being skipped.
+        network_deadline=$(( SECONDS + ${VM_NETWORK_TIMEOUT:-300} ))
+        network_ready=0
+        while (( SECONDS < network_deadline )); do
+            if timeout 60 ssh "${ssh_args[@]}" root@127.0.0.1 \
+                'curl -sS --max-time 20 -o /dev/null https://ghcr.io/v2/' \
+                >> "$logs/ssh.log" 2>&1; then
+                network_ready=1
+                break
+            fi
+            sleep 10
+        done
+        printf 'registry reachable from guest before checks: %s\n' "$network_ready" \
+            >> "$logs/checks.log"
         result=0
-        attempts=${VM_CHECK_ATTEMPTS:-3}
+        attempts=${VM_CHECK_ATTEMPTS:-5}
         for attempt in $(seq 1 "$attempts"); do
             printf '=== check attempt %s/%s ===\n' "$attempt" "$attempts" >> "$logs/checks.log"
             result=0
@@ -97,7 +122,7 @@ PY
                 < "$guest_script" >> "$logs/checks.log" 2>&1 || result=$?
             [[ "$result" == 0 ]] && break
             printf 'check attempt %s/%s failed with %s\n' "$attempt" "$attempts" "$result" >&2
-            (( attempt < attempts )) && sleep 30
+            (( attempt < attempts )) && sleep $(( attempt * 30 ))
         done
         timeout 60 ssh "${ssh_args[@]}" root@127.0.0.1 \
             'journalctl -b --no-pager; bootc status --json; systemctl --failed --no-pager' \
