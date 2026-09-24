@@ -66,6 +66,17 @@ PY
     ! grep -qE ':\$?\{?channel\}@sha256' "$REPO/scripts/verify-vm-guest.sh"
 }
 
+# `rpm -q --whatprovides "kernel-uname-r = <uname -r>"` matches nothing, even on a
+# machine where kernel-core plainly provides that capability and the NVIDIA driver
+# is loaded. It cost a full VM cycle to find, because it fails inside the guest
+# long after the interesting checks have passed. Compare the installed package's
+# NEVR against the running kernel instead.
+@test "guest kernel check does not use the versioned whatprovides form" {
+    ! grep -q 'whatprovides "kernel-uname-r = ' "$REPO/scripts/verify-vm-guest.sh"
+    grep -qF "rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\\n'" "$REPO/scripts/verify-vm-guest.sh"
+    grep -q 'grep -qx "$kernel"' "$REPO/scripts/verify-vm-guest.sh"
+}
+
 @test "installer accepts only explicit published channels" {
     for channel in stable stable-testing; do
         run bash "$REPO/scripts/verify-vm.sh" validate "sha256:$(printf '%064d' 0)" "$channel"

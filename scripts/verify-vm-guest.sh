@@ -50,13 +50,42 @@ PY
 
 # Prove the signature is accepted by the files this image actually ships, using
 # the same mechanism bootc uses: containers/image reading /etc/containers/
-# policy.json and the registries.d entry. A copy resolves the manifest, fetches
-# the signature and enforces the policy, so an unsigned, foreign or tampered
-# image fails here. Nothing is deployed and the origin is left alone.
+# policy.json and the registries.d entry. An unsigned, foreign or tampered image
+# fails here. Nothing is deployed and the origin is left alone.
+#
+# containers/image enforces the policy while it resolves the source manifest,
+# which is before it fetches a single blob. So a bounded copy is enough: the
+# image is either rejected outright, or it gets as far as transferring layers,
+# which only happens once the signature has been accepted. Waiting for the whole
+# image would download several gigabytes under software emulation to prove
+# nothing further, so the transfer is deliberately abandoned.
 echo '=== on-device signature verification ==='
+signature_log=/tmp/ci-signature-check.log
+rm -rf /tmp/ci-signature-check "${signature_log}"
+status=0
+timeout 300 skopeo copy "docker://${repo}@${digest}" dir:/tmp/ci-signature-check \
+    >"${signature_log}" 2>&1 || status=$?
+# 0 means the whole copy finished, which is conclusive on its own. 124 means the
+# bound stopped it while it was transferring layers. Buffered output could in
+# principle be lost to the timeout, so the log is only consulted as a second
+# signal, and only for evidence that transfer had started. Never treat "Getting
+# image source signatures" as success: that line means the signature is being
+# fetched, not that it was accepted.
+if [[ "${status}" != 0 ]] && ! grep -qE 'Copying blob|Writing manifest' "${signature_log}"; then
+    cat "${signature_log}" >&2
+    # Distinguish an unreachable registry from a rejected signature. Both fail
+    # the check, but reporting a TLS handshake timeout as "the policy did not
+    # accept the signature" sends a reader after a signature problem that does
+    # not exist. The caller retries either way.
+    if grep -qiE 'TLS handshake timeout|i/o timeout|connection refused|no such host|network is unreachable|dial tcp' "${signature_log}"; then
+        echo 'FAIL: could not reach the registry to verify the signature (network, not policy)' >&2
+    else
+        echo 'FAIL: the shipped policy did not accept the published signature' >&2
+    fi
+    exit 1
+fi
 rm -rf /tmp/ci-signature-check
-skopeo copy "docker://${repo}@${digest}" dir:/tmp/ci-signature-check
-rm -rf /tmp/ci-signature-check
+grep -E 'Getting image source signatures|Copying blob' "${signature_log}" | head -2
 echo 'PASS: the shipped policy verifies the published signature'
 
 echo '=== booted deployment ==='
@@ -67,8 +96,12 @@ digest, ref = sys.argv[1], sys.argv[2]
 status = json.load(open('/tmp/ci-bootc-status.json'))
 booted = status['status']['booted']['image']
 assert booted['imageDigest'] == digest, booted
-assert booted['image'] == ref, booted
-print(f'PASS: booted {booted["image"]} at the expected digest')
+# bootc nests the source as {"image": "<ref>", "transport": "registry"}, so the
+# reference is an inner field rather than the value of `image` itself.
+source = booted['image']
+assert source['image'] == ref, booted
+assert source['transport'] == 'registry', booted
+print(f'PASS: booted {source["image"]} at the expected digest')
 
 # Report the installed transport rather than asserting it. The origin is written
 # by the installer, not by this image, so claiming it is verified here would be
@@ -96,7 +129,14 @@ done
 
 echo '=== NVIDIA module matches the running kernel ==='
 kernel=$(uname -r)
-rpm -q --whatprovides "kernel-uname-r = $kernel"
+# Confirm the running kernel comes from an installed kernel-core package.
+#
+# Do not use `rpm -q --whatprovides "kernel-uname-r = $kernel"`: the versioned
+# form matches nothing even though kernel-core does provide that capability
+# (verified on a known-good machine, where it reports "no package provides"
+# while `--whatprovides kernel-uname-r` lists kernel-core). Comparing the
+# installed package's NEVR against `uname -r` tests the same thing and works.
+rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | grep -qx "$kernel"
 module=$(modinfo -k "$kernel" -n nvidia)
 [[ -f "$module" ]]
 rpm -qf "$module"
@@ -108,7 +148,18 @@ echo '=== new-user GNOME defaults ==='
 # Do not use GSETTINGS_BACKEND=memory: that bypasses dconf and can hide
 # regressions. ci-smoke was created by the installer, after the image build, so
 # these values come from the system defaults the image ships, not from an import.
-runuser -u ci-smoke -- dbus-run-session -- python3 - <<'PY'
+#
+# dconf needs a usable XDG_RUNTIME_DIR belonging to the user being checked.
+# `runuser` drops privileges but leaves root's value in place, so dconf fails
+# with "unable to create directory '/run/user/0/dconf'" and gsettings silently
+# falls back to schema defaults -- which would let this check pass on a system
+# whose dconf defaults were never applied at all. Create the runtime directory
+# the way pam_systemd would, then point the child at it.
+smoke_uid="$(id -u ci-smoke)"
+smoke_runtime="/run/user/${smoke_uid}"
+install -d -m 0700 -o ci-smoke -g ci-smoke "${smoke_runtime}"
+runuser -u ci-smoke -- env XDG_RUNTIME_DIR="${smoke_runtime}" \
+    dbus-run-session -- python3 - <<'PY'
 import ast, json, pathlib, subprocess
 
 def setting(schema, key):
