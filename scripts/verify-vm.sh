@@ -95,11 +95,16 @@ PY
         # attempt, and widen the backoff, so a slow network does not quietly
         # consume the retry budget and look like a policy failure.
         #
-        # The gate is advisory: curl's exit status is 0 for any HTTP reply, so
-        # this tests reachability and TLS rather than authorisation. If the guest
-        # has no curl, or the registry never answers, the checks still run and
-        # report the real error instead of being skipped.
-        network_deadline=$(( SECONDS + ${VM_NETWORK_TIMEOUT:-300} ))
+        # The gate is advisory and best-effort, and its result is not trusted in
+        # either direction: curl's exit status is 0 for any HTTP reply, so this
+        # tests reachability and TLS rather than authorisation, and under
+        # first-boot load it has reported unreachable on a guest whose signature
+        # check then passed immediately -- first-boot units saturate the CPU and
+        # the user-mode network, so a 20s curl can lose a race that a later
+        # transfer wins. Its only job is to avoid spending an attempt on a
+        # registry that is plainly cold, so keep the cost small and never block
+        # on it: the retry loop below is what actually absorbs a cold network.
+        network_deadline=$(( SECONDS + ${VM_NETWORK_TIMEOUT:-120} ))
         network_ready=0
         while (( SECONDS < network_deadline )); do
             if timeout 60 ssh "${ssh_args[@]}" root@127.0.0.1 \
