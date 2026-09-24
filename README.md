@@ -138,20 +138,27 @@ published as a workflow artifact rather than a release download. Artifacts
 expire, so fetch it and keep your own copy:
 
     gh run download <run-id> --repo sultanaltair96/my-bluefin \
-        --name my-bluefin-stable-testing-installer
+        --name my-bluefin-stable-installer
+
+Artifact and file names carry the channel the installer was built for, because
+the channel decides which updates the installed system tracks. Use `stable` for
+a workstation: `stable` moves only on promotion, whereas every push to `main`
+moves `stable-testing`. An ISO built for one channel installs a specific digest
+and then follows that channel, so a `stable-testing` install can be tracking a
+different digest than the one it was booted from within the same day.
 
 That directory holds three files:
 
 | File | What it is |
 |---|---|
-| `my-bluefin-stable-testing.iso` | the installer |
-| `my-bluefin-stable-testing.iso.sha256` | its checksum — verify before writing |
+| `my-bluefin-stable.iso` | the installer |
+| `my-bluefin-stable.iso.sha256` | its checksum — verify before writing |
 | `provenance.json` | the image digest, channel, commit and run it came from |
 
 Verify, then write it to a USB stick:
 
-    sha256sum -c my-bluefin-stable-testing.iso.sha256
-    sudo dd if=my-bluefin-stable-testing.iso of=/dev/sdX bs=4M \
+    sha256sum -c my-bluefin-stable.iso.sha256
+    sudo dd if=my-bluefin-stable.iso of=/dev/sdX bs=4M \
         status=progress oflag=sync
 
 `/dev/sdX` is the whole device, not a partition: `/dev/sdb`, never `/dev/sdb1`.
