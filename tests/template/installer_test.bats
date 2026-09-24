@@ -177,3 +177,24 @@ for relative in ('scripts/verify-vm.sh', 'iso/iso.toml',
 PY
     [ "$status" -eq 0 ]
 }
+
+@test "the guest network gate tests reachability without requiring authorisation" {
+    # ghcr.io answers /v2/ with 401. curl exits 0 for any HTTP reply unless -f is
+    # given, so `curl -sSf` here returns 22 and the gate never opens: it would
+    # spin out its whole timeout on every run, waiting for a condition that its
+    # own flag makes unreachable. Guard the specific flag, not just the intent.
+    local harness="$REPO/scripts/verify-vm.sh"
+    grep -q 'ghcr.io/v2/' "$harness"
+    grep -q 'VM_NETWORK_TIMEOUT' "$harness"
+    run grep -F 'curl -sSf' "$harness"
+    [ "$status" -ne 0 ]
+}
+
+@test "the guest check retries enough times and backs off between attempts" {
+    # A cold guest network burned two of three attempts in one run, so the retry
+    # budget must not be consumed by transient transport failures.
+    local harness="$REPO/scripts/verify-vm.sh"
+    grep -qE 'attempts=\$\{VM_CHECK_ATTEMPTS:-([3-9]|[1-9][0-9])\}' "$harness"
+    # A flat delay re-hammers a network that is still coming up.
+    grep -qE 'sleep \$\(\( attempt \* [0-9]+ \)\)' "$harness"
+}

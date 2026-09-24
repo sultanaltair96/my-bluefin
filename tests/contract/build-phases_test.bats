@@ -161,3 +161,28 @@ setup() {
         }
     done
 }
+
+@test "scripts under pipefail never pipe into an early-exit consumer" {
+    # `set -o pipefail` promotes a SIGPIPE from an early-exit consumer into a
+    # pipeline failure, so `producer | head -2` or `producer | grep -q` aborts the
+    # whole script with 141. It only fires once the producer writes more than a
+    # pipe buffer, so it presents as intermittent flakiness rather than as a bug:
+    # the boot-test script had two, and one was misread as a network fault and
+    # "fixed" by raising the retry count, which only hid it. Consume with
+    # `grep -m<n>` instead, or capture into a variable and test that.
+    local offenders='' f hits
+    for f in "${BUILD_DIR}"/*.sh "${REPO_ROOT}"/scripts/*.sh; do
+        [ -f "${f}" ] || continue
+        grep -q 'pipefail' "${f}" || continue
+        # Comments explain the rule and quote the bad shape, so strip them first:
+        # otherwise the documentation for this very check trips it.
+        hits="$(grep -nE '\|[[:space:]]*(head|tail[[:space:]]+-|grep[[:space:]]+-[a-zA-Z]*q)' \
+            "${f}" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+        [ -n "${hits}" ] && offenders="${offenders}${f}: ${hits}"$'\n'
+    done
+    if [ -n "${offenders}" ]; then
+        printf 'pipes into an early-exit consumer under pipefail (SIGPIPE -> 141):\n%s' \
+            "${offenders}" >&2
+        return 1
+    fi
+}

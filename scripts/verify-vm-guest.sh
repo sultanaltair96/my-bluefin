@@ -85,7 +85,12 @@ if [[ "${status}" != 0 ]] && ! grep -qE 'Copying blob|Writing manifest' "${signa
     exit 1
 fi
 rm -rf /tmp/ci-signature-check
-grep -E 'Getting image source signatures|Copying blob' "${signature_log}" | head -2
+# `grep ... | head -2` is wrong here: this script runs with `set -o pipefail`, and
+# head exits after two lines, so grep takes SIGPIPE and the whole script dies with
+# 141. It only triggers once the copy logs more than two blobs, which makes it
+# look like network flakiness and land after the expensive checks have run.
+# `grep -m2` stops after two matches itself, so there is no pipe to break.
+grep -m2 -E 'Getting image source signatures|Copying blob' "${signature_log}"
 echo 'PASS: the shipped policy verifies the published signature'
 
 echo '=== booted deployment ==='
@@ -136,7 +141,12 @@ kernel=$(uname -r)
 # (verified on a known-good machine, where it reports "no package provides"
 # while `--whatprovides kernel-uname-r` lists kernel-core). Comparing the
 # installed package's NEVR against `uname -r` tests the same thing and works.
-rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | grep -qx "$kernel"
+# Same trap: `grep -q` exits on its first match, so piping rpm into it hands rpm a
+# SIGPIPE and pipefail turns that into 141. Capture first, then match, so there is
+# no producer left writing to a closed pipe. Multiple kernel-core versions still
+# count as a match, which is the original semantics.
+kernel_nevrs=$(rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n')
+grep -qx "$kernel" <<< "$kernel_nevrs"
 module=$(modinfo -k "$kernel" -n nvidia)
 [[ -f "$module" ]]
 rpm -qf "$module"
