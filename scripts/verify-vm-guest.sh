@@ -88,8 +88,12 @@ digest, ref = sys.argv[1], sys.argv[2]
 status = json.load(open('/tmp/ci-bootc-status.json'))
 booted = status['status']['booted']['image']
 assert booted['imageDigest'] == digest, booted
-assert booted['image'] == ref, booted
-print(f'PASS: booted {booted["image"]} at the expected digest')
+# bootc nests the source as {"image": "<ref>", "transport": "registry"}, so the
+# reference is an inner field rather than the value of `image` itself.
+source = booted['image']
+assert source['image'] == ref, booted
+assert source['transport'] == 'registry', booted
+print(f'PASS: booted {source["image"]} at the expected digest')
 
 # Report the installed transport rather than asserting it. The origin is written
 # by the installer, not by this image, so claiming it is verified here would be
