@@ -17,7 +17,7 @@ upstream ones. This repository adds only what is personal to one workstation:
 | 19 command-line tools | `custom/brew/default.Brewfile` |
 | 7 GNOME Shell extensions enabled, 1 installed | `build/40-gnome-extensions.sh` |
 | GNOME preferences as system defaults | `custom/files/usr/share/my-bluefin/gnome-settings.dconf` |
-| Key-based signature policy for verified updates | `build/35-signing-policy.sh` |
+| Key-based signature policy, so updates *can* be verified | `build/35-signing-policy.sh` |
 
 Deliberately **not** here: personal files, browser state, SSH keys, tokens,
 keyrings, AppImages and application data. Those live in an encrypted snapshot —
@@ -114,12 +114,22 @@ just validate-flatpaks   # Flatpak ids exist on Flathub
 just test-unit           # the contract and template suites
 just build               # build the image against the pinned base
 just build-qcow2         # a bootable test disk
-just build-iso           # installer media
 ```
 
 `tests/contract/` covers the interfaces the image must satisfy, including that
 every phase the Containerfile invokes exists, is executable, and fails closed
 rather than silently overriding upstream.
+
+Installation media comes from the **Build Installer** workflow, not from
+`just build-iso`. The local recipe names the installed system's update origin
+from the `image-tag` baked into the image at build time, which is always
+`stable-testing` because promotion is by digest. An ISO built that way from
+`:stable` would install the right bytes and then track the testing channel. The
+workflow passes the channel through explicitly and verifies the digest's
+signature before building anything.
+
+The workflow also boots the disk it produces and only then builds the ISO, so a
+download is never offered before the image has started successfully.
 
 ## Honest limits
 
