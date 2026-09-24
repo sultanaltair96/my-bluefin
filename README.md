@@ -17,7 +17,7 @@ upstream ones. This repository adds only what is personal to one workstation:
 | 19 command-line tools | `custom/brew/default.Brewfile` |
 | 7 GNOME Shell extensions enabled, 1 installed | `build/40-gnome-extensions.sh` |
 | GNOME preferences as system defaults | `custom/files/usr/share/my-bluefin/gnome-settings.dconf` |
-| Key-based signature policy for verified updates | `build/35-signing-policy.sh` |
+| Key-based signature policy, so updates *can* be verified | `build/35-signing-policy.sh` |
 
 Deliberately **not** here: personal files, browser state, SSH keys, tokens,
 keyrings, AppImages and application data. Those live in an encrypted snapshot —
