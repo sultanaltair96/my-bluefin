@@ -107,6 +107,40 @@ setup() {
     grep -qF 'shell-version' "${phase}"
 }
 
+@test "the enabled extension set is exactly the intended seven" {
+    # The VM check asserts this list against a booted system, which costs a full
+    # CI cycle to discover a typo. Assert it statically too, and assert that the
+    # override sorts after the base image's own overrides: enabled-extensions is
+    # a single array, so the last override to load wins and a zz9- prefix is what
+    # makes this list authoritative over Bluefin's eight.
+    local phase="${BUILD_DIR}/40-gnome-extensions.sh"
+    for uuid in \
+        appindicatorsupport@rgcjonas.gmail.com \
+        bazaar-integration@kolunmi.github.io \
+        blur-my-shell@aunetx \
+        caffeine@patapon.info \
+        logomenu@aryan_k \
+        search-light@icedman.github.com \
+        Resource_Monitor@Ory0n; do
+        grep -qF "${uuid}" "${phase}" || {
+            echo "${phase} never enables ${uuid}" >&2
+            return 1
+        }
+    done
+
+    # Exactly seven: an eighth entry means the list drifted from the source
+    # desktop, which enables these and leaves dash-to-dock, gradia-integration
+    # and gsconnect switched off.
+    local count
+    count="$(awk '/^ENABLED_EXTENSIONS=\(/ { inside=1; next } inside && /^\)/ { exit } inside && /@/ { n++ } END { print n + 0 }' "${phase}")"
+    [ "${count}" -eq 7 ] || {
+        echo "expected 7 enabled extensions, found ${count}" >&2
+        return 1
+    }
+
+    grep -qF 'zz9-my-bluefin-extensions.gschema.override' "${phase}"
+}
+
 @test "shellcheck is clean on every build phase" {
     command -v shellcheck >/dev/null || skip "shellcheck is not installed"
     for phase in "${INVOKED[@]}"; do
