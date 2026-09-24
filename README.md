@@ -131,6 +131,32 @@ signature before building anything.
 The workflow also boots the disk it produces and only then builds the ISO, so a
 download is never offered before the image has started successfully.
 
+### Getting and writing the media
+
+The ISO is 4.69 GiB, which is above GitHub's 2 GiB release-asset limit, so it is
+published as a workflow artifact rather than a release download. Artifacts
+expire, so fetch it and keep your own copy:
+
+    gh run download <run-id> --repo sultanaltair96/my-bluefin \
+        --name my-bluefin-stable-testing-installer
+
+That directory holds three files:
+
+| File | What it is |
+|---|---|
+| `my-bluefin-stable-testing.iso` | the installer |
+| `my-bluefin-stable-testing.iso.sha256` | its checksum — verify before writing |
+| `provenance.json` | the image digest, channel, commit and run it came from |
+
+Verify, then write it to a USB stick:
+
+    sha256sum -c my-bluefin-stable-testing.iso.sha256
+    sudo dd if=my-bluefin-stable-testing.iso of=/dev/sdX bs=4M \
+        status=progress oflag=sync
+
+`/dev/sdX` is the whole device, not a partition: `/dev/sdb`, never `/dev/sdb1`.
+Check with `lsblk` first — writing to the wrong device destroys its contents.
+
 ## Honest limits
 
 - **Declarative, not bit-reproducible.** The base is pinned by digest and the
